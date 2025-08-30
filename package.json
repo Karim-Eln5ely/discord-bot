@@ -4,6 +4,7 @@
     "discord-api-types": "^0.38.22",
     "discord.js": "^14.22.1",
     "dotenv": "^17.2.1",
+    "express": "^5.1.0",
     "mongoose": "^8.18.0"
   },
   "name": "discord-bot",
@@ -23,8 +24,6 @@
   "description": "",
   "type": "commonjs",
   "engines": {
-  "node": "18.x"
+    "node": "18.x"
+  }
 }
-  
-}
-
