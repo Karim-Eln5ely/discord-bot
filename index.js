@@ -3,6 +3,7 @@ require("./server");
 const fs = require("fs");
 const { Client, Collection, GatewayIntentBits } = require("discord.js");
 const connectDB = require("./db/connection");
+const prayerUtils = require("./utils/prayerUtils"); // إضافة prayerUtils
 
 // إنشاء البوت مع جميع الـ Intents المطلوبة
 const client = new Client({
@@ -49,6 +50,12 @@ for (const file of eventFiles) {
     client.on(event.name, (...args) => event.execute(...args, client));
   }
 }
+
+// ===== تشغيل ميزة الآذان =====
+client.once("ready", () => {
+  console.log(`✅ Logged in as ${client.user.tag}`);
+  prayerUtils(client); // تشغيل جدولة الآذان
+});
 
 // ===== Handle uncaught errors =====
 process.on("unhandledRejection", (error) => {
