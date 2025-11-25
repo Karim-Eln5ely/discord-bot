@@ -9,6 +9,8 @@ const {
 const { EmbedBuilder } = require("@discordjs/builders");
 const PrayerSettings = require("../db/models/prayer.js");
 
+const cronJobs = new Map(); // لتخزين الـ CronJobs
+
 module.exports = (client) => {
   console.log("PrayerUtils initialized");
 
@@ -20,12 +22,14 @@ module.exports = (client) => {
       console.log("No prayer settings found in database");
       return;
     }
+
     for (const settings of guilds) {
       const guild = client.guilds.cache.get(settings.guildId);
       if (!guild) {
         console.log(`Guild ${settings.guildId} not found`);
         continue;
       }
+
       const response = await fetch(
         `http://api.aladhan.com/v1/timingsByCity?city=${settings.city}&country=${settings.country}&method=5`
       );
@@ -36,11 +40,13 @@ module.exports = (client) => {
         );
         continue;
       }
+
       const timings = data.data.timings;
       console.log(
         `Prayer times for ${settings.city}, ${settings.country}:`,
         timings
       );
+
       const prayers = [
         { name: "الفجر", time: timings.Fajr },
         { name: "الظهر", time: timings.Dhuhr },
@@ -48,6 +54,20 @@ module.exports = (client) => {
         { name: "المغرب", time: timings.Maghrib },
         { name: "العشاء", time: timings.Isha },
       ];
+
+      // وقف الـ CronJobs القديمة لهذا الـ guild
+      const guildCronKey = settings.guildId;
+      if (cronJobs.has(guildCronKey)) {
+        const jobs = cronJobs.get(guildCronKey);
+        for (const job of jobs) {
+          job.stop();
+          console.log(`Stopped old CronJob for guild ${guild.id}`);
+        }
+        cronJobs.delete(guildCronKey);
+      }
+
+      // إنشاء CronJobs جديدة
+      const newJobs = [];
       prayers.forEach((prayer) => {
         const [hours, minutes] = prayer.time.split(":").map(Number);
         const cronTime = `${minutes} ${hours} * * *`;
@@ -59,10 +79,14 @@ module.exports = (client) => {
           "Africa/Cairo"
         );
         job.start();
+        newJobs.push(job);
         console.log(
           `Scheduled ${prayer.name} at ${hours}:${minutes} for guild ${guild.id}`
         );
       });
+
+      // تخزين الـ CronJobs الجديدة
+      cronJobs.set(guildCronKey, newJobs);
     }
   }
 
@@ -124,7 +148,6 @@ async function announcePrayer(guild, settings, prayerName, prayerTime) {
     console.log(`No active voice channels in guild ${guild.id} for ${prayerName}`);
     return;
   }
-
   const mostPopulatedVoice = voiceChannels
     .sort((a, b) => b.members.size - a.members.size)
     .first();
@@ -140,16 +163,13 @@ async function announcePrayer(guild, settings, prayerName, prayerTime) {
       adapterCreator: guild.voiceAdapterCreator,
     });
     console.log(`Connected to voice channel ${mostPopulatedVoice.id} for ${prayerName}`);
-
     const player = createAudioPlayer();
     const resource = createAudioResource(
       "https://islamcan.com/audio/adhan/azan9.mp3"
     );
-
     player.play(resource);
     connection.subscribe(player);
     console.log(`Playing adhan in voice channel ${mostPopulatedVoice.id} for ${prayerName}`);
-
     player.on(AudioPlayerStatus.Idle, () => {
       console.log(
         `Adhan finished for ${prayerName}, leaving voice channel ${mostPopulatedVoice.id}`
@@ -158,7 +178,6 @@ async function announcePrayer(guild, settings, prayerName, prayerTime) {
         connection.destroy();
       }
     });
-
     player.on("error", (error) => {
       console.error(`Error playing adhan for ${prayerName} in guild ${guild.id}:`, error);
       if (connection && connection.state.status !== "destroyed") {

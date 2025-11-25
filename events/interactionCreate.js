@@ -16,10 +16,11 @@ const {
   ROLE_DESCRIPTIONS,
 } = require("../utils/mafiaState");
 
+
 // ====== IDs ======
 const ticketCategoryId = "1411375711066788021"; // كاتيجوري التيكتات
 const ticketLogsId = "1411376005268111512"; // روم اللوجز
-
+const gameChannelId = "1413212018562830516"; // غيّر ده بـ ID روم اللعبة الفعلي
 module.exports = {
   name: "interactionCreate",
   async execute(interaction, client) {
@@ -33,7 +34,7 @@ module.exports = {
         console.error(error);
         const reply = {
           content: "❌ حصل خطأ وانت بتنّفذ الأمر!",
-          ephemeral: true,
+          flags: MessageFlags.Ephemeral,
         };
         if (interaction.replied || interaction.deferred) {
           await interaction.followUp(reply);
@@ -43,27 +44,30 @@ module.exports = {
       }
       return;
     }
-
     // ===== Tickets =====
     if (interaction.isButton() && interaction.customId.includes("ticket")) {
       const logChannel = interaction.guild.channels.cache.get(ticketLogsId);
       const member = interaction.user;
-
+      // استخراج owner ID من topic الروم
+      function getOwnerId(channel) {
+        if (!channel.topic) return null;
+        const match = channel.topic.match(/Owner ID: (\d+)/);
+        return match ? match[1] : null; // نرجع الـ ID كـ string
+      }
       // ---------- Create Ticket ----------
       if (interaction.customId === "create_ticket") {
+        // تحقق من وجود تيكت موجود (مفتوح أو مغلق)
         const existingChannel = interaction.guild.channels.cache.find(
           (c) =>
-            c.name.startsWith(`ticket-${member.username}-`) &&
-            c.parentId === ticketCategoryId
+            c.parentId === ticketCategoryId &&
+            c.topic &&
+            getOwnerId(c) === member.id
         );
         if (existingChannel) {
-          const memberPermission = existingChannel.permissionsFor(member);
-          if (memberPermission.has(PermissionFlagsBits.SendMessages)) {
-            return interaction.reply({
-              content: "❌ You already have an open ticket.",
-              flags: MessageFlags.Ephemeral,
-            });
-          }
+          return interaction.reply({
+            content: `❌ لديك تيكت موجود بالفعل: <#${existingChannel.id}>. إذا كان مغلقًا، اطلب من الستاف إعادة فتحه أو احذفه لإنشاء واحد جديد.`,
+            flags: MessageFlags.Ephemeral,
+          });
         }
         try {
           const randomNum = Math.floor(Math.random() * 100);
@@ -75,6 +79,7 @@ module.exports = {
             name: channelName,
             type: ChannelType.GuildText,
             parent: ticketCategoryId,
+            topic: `Owner ID: ${member.id}`, // حفظ ID المالك في الـ topic
             permissionOverwrites: [
               {
                 id: interaction.guild.roles.everyone.id,
@@ -124,8 +129,9 @@ module.exports = {
               .setTimestamp();
             logChannel.send({ embeds: [logEmbed] });
           }
+          // رد ephemeral خاص باليوزر فقط (مش بيعدل الرسالة الأصلية عشان الزر يفضل للآخرين)
           return interaction.reply({
-            content: `✅ Your ticket has been created: <#${channel.id}>`,
+            content: `✅ تم إنشاء التيكت الخاص بك: <#${channel.id}>`,
             flags: MessageFlags.Ephemeral,
           });
         } catch (error) {
@@ -137,18 +143,32 @@ module.exports = {
           });
         }
       }
-
       // ---------- Close Ticket ----------
       if (interaction.customId === "close_ticket") {
         const channel = interaction.channel;
+        const ownerId = getOwnerId(channel);
+        // تحقق من صلاحيات المستخدم
         if (
-          member.id !== channel.name.split("-")[1] &&
+          ownerId !== member.id &&
           !interaction.member.permissions.has(
             PermissionFlagsBits.ManageChannels
           )
         ) {
           return interaction.reply({
             content: "❌ You cannot close this ticket.",
+            flags: MessageFlags.Ephemeral,
+          });
+        }
+        // إذا كان ownerId غير موجود، منع الإغلاق إلا لو الستاف
+        if (
+          !ownerId &&
+          !interaction.member.permissions.has(
+            PermissionFlagsBits.ManageChannels
+          )
+        ) {
+          return interaction.reply({
+            content:
+              "❌ Cannot close ticket: Owner ID not found in channel topic.",
             flags: MessageFlags.Ephemeral,
           });
         }
@@ -167,58 +187,98 @@ module.exports = {
           .setDescription(`This ticket has been closed by ${member}.`)
           .setColor(0xffcc00)
           .setTimestamp();
-        await channel.permissionOverwrites.set([
-          {
-            id: interaction.guild.roles.everyone.id,
-            deny: [
-              PermissionFlagsBits.ViewChannel,
-              PermissionFlagsBits.SendMessages,
-            ],
-          },
-          {
-            id: member.id,
-            deny: [
-              PermissionFlagsBits.SendMessages,
-              PermissionFlagsBits.AddReactions,
-              PermissionFlagsBits.AttachFiles,
-              PermissionFlagsBits.EmbedLinks,
-              PermissionFlagsBits.UseApplicationCommands,
-            ],
-          },
-        ]);
-        await channel.send({ embeds: [embed], components: [row] });
-        if (logChannel) {
-          const logEmbed = new EmbedBuilder()
-            .setTitle("🔒 Ticket Closed")
-            .addFields(
-              { name: "User", value: `${member}`, inline: true },
-              { name: "Channel", value: `<#${channel.id}>`, inline: true },
-              {
-                name: "Closed At",
-                value: `<t:${Math.floor(Date.now() / 1000)}>`,
-              }
-            )
-            .setColor(0xffcc00)
-            .setTimestamp();
-          logChannel.send({ embeds: [logEmbed] });
+        try {
+          // تحديث الـ permissions
+          const permissionOverwrites = [
+            {
+              id: interaction.guild.roles.everyone.id,
+              deny: [
+                PermissionFlagsBits.ViewChannel,
+                PermissionFlagsBits.SendMessages,
+              ],
+            },
+          ];
+          // إضافة permissions المالك فقط إذا كان ownerId موجود
+          if (ownerId) {
+            // تحقق من وجود المستخدم في الـ cache
+            const ownerMember = await interaction.guild.members
+              .fetch(ownerId)
+              .catch(() => null);
+            if (ownerMember) {
+              permissionOverwrites.push({
+                id: ownerId,
+                allow: [
+                  PermissionFlagsBits.ViewChannel,
+                  PermissionFlagsBits.ReadMessageHistory,
+                ],
+                deny: [
+                  PermissionFlagsBits.SendMessages,
+                  PermissionFlagsBits.AddReactions,
+                  PermissionFlagsBits.AttachFiles,
+                  PermissionFlagsBits.EmbedLinks,
+                  PermissionFlagsBits.UseApplicationCommands,
+                ],
+              });
+            } else {
+              console.warn(`Owner ID ${ownerId} not found in guild cache.`);
+            }
+          }
+          await channel.permissionOverwrites.set(permissionOverwrites);
+          // تحديث الرسالة الأصلية (اللي فيها زر Close) إلى رسالة Closed مع أزرار Reopen و Delete
+          await interaction.update({ embeds: [embed], components: [row] });
+          if (logChannel) {
+            const logEmbed = new EmbedBuilder()
+              .setTitle("🔒 Ticket Closed")
+              .addFields(
+                { name: "User", value: `${member}`, inline: true },
+                { name: "Channel", value: `<#${channel.id}>`, inline: true },
+                {
+                  name: "Closed At",
+                  value: `<t:${Math.floor(Date.now() / 1000)}>`,
+                }
+              )
+              .setColor(0xffcc00)
+              .setTimestamp();
+            logChannel.send({ embeds: [logEmbed] });
+          }
+          // رد ephemeral إضافي للتأكيد (اختياري)
+          await interaction.followUp({
+            content: "✅ Ticket closed.",
+            flags: MessageFlags.Ephemeral,
+          });
+        } catch (error) {
+          console.error("Error closing ticket:", error);
+          return interaction.reply({
+            content: "❌ Failed to close ticket due to permission error.",
+            flags: MessageFlags.Ephemeral,
+          });
         }
-        return interaction.reply({
-          content: "✅ Ticket closed.",
-          flags: MessageFlags.Ephemeral,
-        });
       }
-
       // ---------- Reopen Ticket ----------
       if (interaction.customId === "reopen_ticket") {
         const channel = interaction.channel;
+        const ownerId = getOwnerId(channel);
         if (
-          member.id !== channel.name.split("-")[1] &&
+          ownerId !== member.id &&
           !interaction.member.permissions.has(
             PermissionFlagsBits.ManageChannels
           )
         ) {
           return interaction.reply({
             content: "❌ You cannot reopen this ticket.",
+            flags: MessageFlags.Ephemeral,
+          });
+        }
+        // إذا كان ownerId غير موجود، منع إعادة الفتح إلا لو الستاف
+        if (
+          !ownerId &&
+          !interaction.member.permissions.has(
+            PermissionFlagsBits.ManageChannels
+          )
+        ) {
+          return interaction.reply({
+            content:
+              "❌ Cannot reopen ticket: Owner ID not found in channel topic.",
             flags: MessageFlags.Ephemeral,
           });
         }
@@ -233,42 +293,62 @@ module.exports = {
           .setDescription(`This ticket has been reopened by ${member}.`)
           .setColor(0x00ff00)
           .setTimestamp();
-        await channel.permissionOverwrites.edit(member.id, {
-          SendMessages: true,
-        });
-        await channel.permissionOverwrites.edit(
-          interaction.guild.roles.everyone.id,
-          {
-            SendMessages: false,
+        try {
+          if (ownerId) {
+            // تحقق من وجود المستخدم في الـ cache
+            const ownerMember = await interaction.guild.members
+              .fetch(ownerId)
+              .catch(() => null);
+            if (ownerMember) {
+              await channel.permissionOverwrites.edit(ownerId, {
+                SendMessages: true,
+                AddReactions: null,
+                AttachFiles: null,
+                EmbedLinks: null,
+                UseApplicationCommands: null,
+              });
+            } else {
+              console.warn(
+                `Owner ID ${ownerId} not found in guild cache for reopen.`
+              );
+            }
           }
-        );
-        await channel.send({ embeds: [embed], components: [row] });
-        if (logChannel) {
-          const logEmbed = new EmbedBuilder()
-            .setTitle("✅ Ticket Reopened")
-            .addFields(
-              { name: "User", value: `${member}`, inline: true },
-              { name: "Channel", value: `<#${channel.id}>`, inline: true },
-              {
-                name: "Reopened At",
-                value: `<t:${Math.floor(Date.now() / 1000)}>`,
-              }
-            )
-            .setColor(0x00ff00)
-            .setTimestamp();
-          logChannel.send({ embeds: [logEmbed] });
+          // تحديث الرسالة الأصلية (اللي فيها Reopen و Delete) إلى رسالة Reopened مع زر Close
+          await interaction.update({ embeds: [embed], components: [row] });
+          if (logChannel) {
+            const logEmbed = new EmbedBuilder()
+              .setTitle("✅ Ticket Reopened")
+              .addFields(
+                { name: "User", value: `${member}`, inline: true },
+                { name: "Channel", value: `<#${channel.id}>`, inline: true },
+                {
+                  name: "Reopened At",
+                  value: `<t:${Math.floor(Date.now() / 1000)}>`,
+                }
+              )
+              .setColor(0x00ff00)
+              .setTimestamp();
+            logChannel.send({ embeds: [logEmbed] });
+          }
+          // رد ephemeral إضافي للتأكيد (اختياري)
+          await interaction.followUp({
+            content: "✅ Ticket reopened.",
+            flags: MessageFlags.Ephemeral,
+          });
+        } catch (error) {
+          console.error("Error reopening ticket:", error);
+          return interaction.reply({
+            content: "❌ Failed to reopen ticket due to permission error.",
+            flags: MessageFlags.Ephemeral,
+          });
         }
-        return interaction.reply({
-          content: "✅ Ticket reopened.",
-          flags: MessageFlags.Ephemeral,
-        });
       }
-
       // ---------- Delete Ticket ----------
       if (interaction.customId === "delete_ticket") {
         const channel = interaction.channel;
+        const ownerId = getOwnerId(channel);
         if (
-          member.id !== channel.name.split("-")[1] &&
+          ownerId !== member.id &&
           !interaction.member.permissions.has(
             PermissionFlagsBits.ManageChannels
           )
@@ -434,6 +514,58 @@ module.exports = {
       if (interaction.customId === "vote_player") {
         await handleVote(interaction, client, game);
       }
+    }
+
+    // ===== نظام موافقة الأدمن على دخول روم صوتي (Waiting Room) =====
+    if (interaction.isButton() && (interaction.customId.startsWith("admin_approve_") || interaction.customId.startsWith("admin_decline_"))) {
+      if (!interaction.member?.permissions.has("Administrator")) {
+        return interaction.reply({ content: "فقط الأدمن يقدروا يستخدموا الأزرار دي!", ephemeral: true });
+      }
+
+      const action = interaction.customId.startsWith("admin_approve_") ? "approve" : "decline";
+      const targetId = interaction.customId.split("_")[2];
+      const targetMember = interaction.guild.members.cache.get(targetId);
+
+      if (!targetMember) {
+        return interaction.reply({ content: "العضو مش موجود في السيرفر دلوقتي.", ephemeral: true });
+      }
+
+      if (!targetMember.voice?.channel) {
+        return interaction.reply({ content: "العضو مش متصل بأي روم صوتي حاليًا.", ephemeral: true });
+      }
+
+      try {
+        if (action === "approve") {
+          // غيّر الـ ID ده للروم الصوتي اللي عايز تنقلهم فيه
+          const adminVoiceChannelId = "1361338723236839614"; 
+          const adminVoiceChannel = interaction.guild.channels.cache.get(adminVoiceChannelId);
+
+          if (!adminVoiceChannel) {
+            return interaction.reply({ content: "روم الأدمن الصوتي مش موجود! تأكد من الـ ID.", ephemeral: true });
+          }
+
+          await targetMember.voice.setChannel(adminVoiceChannel);
+          await interaction.reply({ content: `${targetMember} تم نقله إلى روم الأدمن بنجاح!`, ephemeral: false });
+        } else {
+          await targetMember.voice.disconnect();
+          await interaction.reply({ content: `${targetMember} تم رفضه وفصله من الروم الصوتي.`, ephemeral: false });
+        }
+
+        // تعديل الرسالة الأصلية بعد الضغط على الزر
+        if (interaction.message.embeds[0]) {
+          const newEmbed = EmbedBuilder.from(interaction.message.embeds[0])
+            .setColor(action === "approve" ? "#00ff00" : "#ff0000")
+            .setFooter({ text: `تمت المعالجة بواسطة ${interaction.user.tag}` })
+            .setTimestamp();
+
+          await interaction.message.edit({ embeds: [newEmbed], components: [] });
+        }
+      } catch (error) {
+        console.error("خطأ في نظام Waiting Room:", error);
+        await interaction.reply({ content: "حصل خطأ أثناء النقل أو الفصل!", ephemeral: true });
+      }
+
+      return;
     }
   },
 };
@@ -907,3 +1039,4 @@ async function handleVote(interaction, client, game) {
     ephemeral: true,
   });
 }
+

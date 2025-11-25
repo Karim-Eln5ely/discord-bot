@@ -3,7 +3,8 @@ require("./server");
 const fs = require("fs");
 const { Client, Collection, GatewayIntentBits } = require("discord.js");
 const connectDB = require("./db/connection");
-const prayerUtils = require("./utils/prayerUtils"); 
+const prayerUtils = require("./utils/prayerUtils");
+const axios = require("axios");
 
 const client = new Client({
   intents: [
@@ -11,14 +12,14 @@ const client = new Client({
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildVoiceStates, 
+    GatewayIntentBits.GuildVoiceStates,
   ],
 });
 
 connectDB();
 
 client.commands = new Collection();
-
+client.activeMoveSpams = new Map();
 const commandFolders = fs.readdirSync("./commands");
 for (const folder of commandFolders) {
   const commandFiles = fs
@@ -48,7 +49,7 @@ for (const file of eventFiles) {
 
 client.once("ready", () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
-  prayerUtils(client); 
+  prayerUtils(client);
 });
 
 process.on("unhandledRejection", (error) => {
